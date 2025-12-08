@@ -1,36 +1,22 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import { useMutation } from '@tanstack/react-query'
-import ReactMarkdown from 'react-markdown'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { Select } from '@/components/ui/select'
-import { Alert } from '@/components/ui/alert'
+import React, { useState, useEffect, useRef } from 'react'
 import { askDoctorPlus, RateLimitError, ValidationError, ServerError } from '@/lib/api/doctorplus'
 import { initializeAnalytics, trackWebDoctorPlusRequest, trackWebDoctorPlusResponse, trackWebDoctorPlusLimitReached } from '@/lib/analytics/posthog'
 import { LIMITS, CHAT_CONFIG } from '@/lib/config'
-import { getOrCreateConversationId, clearConversationId } from '@/lib/utils/request-id'
-import { ChatMessage, DoctorPlusMode } from '@/types/doctorplus'
+import { getOrCreateConversationId } from '@/lib/utils/request-id'
+import { DoctorPlusMode } from '@/types/doctorplus'
+import type { ChatMessage } from '@/types/chat'
+import { ChatMessageBubble } from './ChatMessageBubble'
+import { ChatInputBar } from './ChatInputBar'
+import { TypingBubble } from './TypingBubble'
 
 export function ChatSection() {
-  const [mode, setMode] = useState<DoctorPlusMode>('symptoms')
+  const [mode] = useState<DoctorPlusMode>('symptoms') // Скрыто от пользователя, можно расширить
   const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [error, setError] = useState<string | null>(null)
-
-  // Form state
-  const [text, setText] = useState('')
-  const [sex, setSex] = useState<string>('')
-  const [age, setAge] = useState<string>('')
-  const [complaint, setComplaint] = useState('')
-  const [temperature, setTemperature] = useState('')
-  const [pressure, setPressure] = useState('')
-  const [symptomDuration, setSymptomDuration] = useState('')
-  const [chronic, setChronic] = useState('')
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [imagePreview, setImagePreview] = useState<string | null>(null)
-
+  const [input, setInput] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [errorText, setErrorText] = useState<string | null>(null)
   const [requestsToday, setRequestsToday] = useState(0)
   const [limitReached, setLimitReached] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -72,401 +58,117 @@ export function ChatSection() {
     }
   }
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+  const handleSend = async () => {
+    const trimmed = input.trim()
+    if (!trimmed || isLoading) return
 
-    setError(null)
-
-    if (file.size > LIMITS.maxImageSizeBytes) {
-      setError(`Файл слишком большой. Максимум ${LIMITS.maxImageSizeBytes / 1024 / 1024}MB.`)
+    if (limitReached) {
+      setErrorText('Лимит бесплатных запросов исчерпан. Попробуйте позже.')
+      trackWebDoctorPlusLimitReached('local')
       return
     }
 
-    setSelectedFile(file)
+    setErrorText(null)
 
-    // Create preview
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      setImagePreview(event.target?.result as string)
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      sender: 'user',
+      content: trimmed,
+      createdAt: new Date().toISOString(),
     }
-    reader.readAsDataURL(file)
+
+    setMessages((prev) => [...prev, userMessage])
+    setInput('')
+    setIsLoading(true)
+
+    const startTime = Date.now()
+    trackWebDoctorPlusRequest(mode, !!trimmed, false, getOrCreateConversationId(), '')
+
+    try {
+      const response = await askDoctorPlus({
+        mode,
+        text: trimmed,
+        image_b64: null,
+        meta: undefined,
+      })
+
+      const duration = Date.now() - startTime
+      trackWebDoctorPlusResponse(mode, false, true, duration)
+      incrementRequestCount()
+
+      const doctorMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        sender: 'doctor',
+        content: response.answer_md,
+        createdAt: new Date().toISOString(),
+      }
+
+      setMessages((prev) => [...prev, doctorMessage])
+    } catch (err) {
+      const duration = Date.now() - startTime
+      let errorType = 'unknown'
+      let errorMessage = 'Не удалось получить ответ. Попробуйте ещё раз.'
+
+      if (err instanceof RateLimitError) {
+        errorType = 'rate_limit'
+        errorMessage = 'Лимит запросов на сервере исчерпан. Попробуйте позже.'
+        trackWebDoctorPlusLimitReached('backend')
+      } else if (err instanceof ValidationError) {
+        errorType = 'validation'
+        errorMessage = err.message || 'Некорректные данные. Проверьте ввод.'
+      } else if (err instanceof ServerError) {
+        errorType = 'server'
+        errorMessage = 'Сервис временно недоступен. Попробуйте позже.'
+      }
+
+      trackWebDoctorPlusResponse(mode, false, false, duration, errorType)
+      setErrorText(errorMessage)
+    } finally {
+      setIsLoading(false)
+    }
   }
 
-  const { mutate: sendMessage, isPending } = useMutation({
-    mutationFn: async () => {
-      if (limitReached) {
-        const error = new Error('Лимит бесплатных запросов исчерпан. Попробуйте позже.')
-        trackWebDoctorPlusLimitReached('local')
-        throw error
-      }
 
-      if (!text.trim()) {
-        throw new Error('Пожалуйста, введите текст перед отправкой.')
-      }
 
-      let imageBase64: string | null = null
-      if (selectedFile && mode === 'analyses') {
-        const reader = new FileReader()
-        imageBase64 = await new Promise((resolve, reject) => {
-          reader.onload = () => {
-            const result = reader.result as string
-            const base64 = result.includes(',') ? result.split(',')[1] : result
-            resolve(base64)
-          }
-          reader.onerror = reject
-          reader.readAsDataURL(selectedFile)
-        })
-      }
-
-      const startTime = Date.now()
-      trackWebDoctorPlusRequest(mode, !!text, !!imageBase64, getOrCreateConversationId(), '')
-
-      try {
-        const response = await askDoctorPlus({
-          mode,
-          text,
-          image_b64: imageBase64,
-          meta: {
-            sex: sex ? (sex as 'male' | 'female' | 'other') : undefined,
-            age: age ? parseInt(age, 10) : undefined,
-            complaint: complaint || undefined,
-            extra:
-              mode === 'symptoms'
-                ? [temperature, pressure, symptomDuration, chronic].filter(Boolean).join('; ') || undefined
-                : undefined,
-          },
-        })
-
-        const duration = Date.now() - startTime
-        trackWebDoctorPlusResponse(mode, !!imageBase64, true, duration)
-        incrementRequestCount()
-
-        return response.answer_md
-      } catch (err) {
-        const duration = Date.now() - startTime
-        let errorType = 'unknown'
-        let errorMessage = 'Не удалось получить ответ. Попробуйте ещё раз.'
-
-        if (err instanceof RateLimitError) {
-          errorType = 'rate_limit'
-          errorMessage = 'Лимит запросов на сервере исчерпан. Попробуйте позже.'
-          trackWebDoctorPlusLimitReached('backend')
-        } else if (err instanceof ValidationError) {
-          errorType = 'validation'
-          errorMessage = err.message || 'Некорректные данные. Проверьте ввод.'
-        } else if (err instanceof ServerError) {
-          errorType = 'server'
-          errorMessage = 'Сервис временно недоступен. Попробуйте позже.'
-        }
-
-        trackWebDoctorPlusResponse(mode, !!imageBase64, false, duration, errorType)
-        throw new Error(errorMessage)
-      }
-    },
-    onSuccess: (answer) => {
-      const userMessage: ChatMessage = {
-        id: Date.now().toString(),
-        type: 'user',
-        content: text,
-        timestamp: new Date(),
-        metadata: { mode, hasImage: !!selectedFile },
-      }
-
-      const assistantMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        type: 'assistant',
-        content: answer,
-        timestamp: new Date(),
-      }
-
-      setMessages((prev) => [...prev, userMessage, assistantMessage])
-      setText('')
-      setSelectedFile(null)
-      setImagePreview(null)
-      setError(null)
-    },
-    onError: (err) => {
-      setError((err as Error).message)
-    },
-  })
-
-  const handleClearChat = () => {
-    setMessages([])
-    clearConversationId()
-    setError(null)
-    setText('')
-    setSelectedFile(null)
-    setImagePreview(null)
-  }
-
-  const sexOptions = [
-    { value: '', label: 'Не указано' },
-    { value: 'male', label: 'Мужской' },
-    { value: 'female', label: 'Женский' },
-    { value: 'other', label: 'Другое' },
-  ]
-
-  const tabs = [
-    {
-      id: 'symptoms',
-      label: 'Симптомы',
-      content: (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <Select label="Пол" value={sex} onChange={(e) => setSex(e.target.value)} options={sexOptions} />
-            <Input
-              label="Возраст"
-              type="number"
-              value={age}
-              onChange={(e) => setAge(e.target.value)}
-              placeholder="Ваш возраст"
-            />
-          </div>
-
-          <Textarea
-            label="Что вас беспокоит?"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Опишите ваши симптомы..."
-            rows={4}
-            disabled={isPending}
-          />
-
-          <details className="border border-gray-300 rounded-lg p-4">
-            <summary className="cursor-pointer font-medium text-gray-900">
-              Дополнительная информация (опционально)
-            </summary>
-            <div className="mt-4 space-y-3">
-              <Input
-                label="Температура (°C)"
-                type="number"
-                value={temperature}
-                onChange={(e) => setTemperature(e.target.value)}
-                placeholder="37.5"
-                step="0.1"
-              />
-              <Input
-                label="Давление (мм рт.ст.)"
-                value={pressure}
-                onChange={(e) => setPressure(e.target.value)}
-                placeholder="120/80"
-              />
-              <Input
-                label="Длительность (например, 3 дня)"
-                value={symptomDuration}
-                onChange={(e) => setSymptomDuration(e.target.value)}
-                placeholder="3 дня"
-              />
-              <Textarea
-                label="Хронические заболевания"
-                value={chronic}
-                onChange={(e) => setChronic(e.target.value)}
-                placeholder="Диабет, гипертония и т.п."
-                rows={2}
-              />
+  return (
+    <div className="flex h-full min-h-[100dvh] w-full justify-center bg-[#f5f5f7]">
+      <div className="flex h-full w-full max-w-xl flex-col px-3 pb-3 pt-2">
+        <div className="flex-1 overflow-y-auto pb-4">
+          {messages.length === 0 ? (
+            <div className="mt-24 flex flex-col items-center justify-center text-center">
+              <h1 className="text-xl font-semibold text-neutral-800">
+                Чем вам помочь?
+              </h1>
+              <p className="mt-2 max-w-xs text-sm text-neutral-500">
+                Опишите симптомы или прикрепите фото анализов — Доктор+ объяснит простыми словами.
+              </p>
+              <p className="mt-4 text-[11px] uppercase tracking-wide text-emerald-600">
+                DEBUG: Doctor+ iOS chat v1
+              </p>
             </div>
-          </details>
-        </div>
-      ),
-    },
-    {
-      id: 'analyses',
-      label: 'Анализы',
-      content: (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <Select label="Пол" value={sex} onChange={(e) => setSex(e.target.value)} options={sexOptions} />
-            <Input
-              label="Возраст"
-              type="number"
-              value={age}
-              onChange={(e) => setAge(e.target.value)}
-              placeholder="Ваш возраст"
-            />
-          </div>
-
-          <Input
-            label="Зачем сдавали анализ / жалоба"
-            value={complaint}
-            onChange={(e) => setComplaint(e.target.value)}
-            placeholder="Например: плохое самочувствие, контроль при диабете"
-          />
-
-          <Textarea
-            label="Текст анализа"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Вставьте сюда текст из ваших анализов..."
-            rows={5}
-            disabled={isPending}
-          />
-
-          <div className="border-2 border-dashed border-gray-300 rounded-lg p-4">
-            <label className="cursor-pointer">
-              <div className="text-center">
-                <div className="text-3xl mb-2">📷</div>
-                <p className="font-medium text-gray-900">Прикрепить фото анализа</p>
-                <p className="text-sm text-gray-500 mt-1">или перетащите файл сюда</p>
-              </div>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handleFileSelect}
-                className="hidden"
-              />
-            </label>
-          </div>
-
-          {imagePreview && (
-            <div className="relative">
-              <img
-                src={imagePreview}
-                alt="Preview"
-                className="max-h-48 rounded-lg mx-auto"
-              />
-              <button
-                onClick={() => {
-                  setSelectedFile(null)
-                  setImagePreview(null)
-                }}
-                className="absolute top-2 right-2 bg-red-500 text-white rounded-full w-8 h-8 flex items-center justify-center"
-              >
-                ✕
-              </button>
+          ) : (
+            <div className="flex flex-col gap-2 pb-4">
+              {messages.map((message) => (
+                <ChatMessageBubble key={message.id} message={message} />
+              ))}
+              {isLoading && <TypingBubble />}
+              {errorText && (
+                <div className="mt-2 self-center rounded-full bg-red-50 px-4 py-1 text-xs text-red-600">
+                  {errorText}
+                </div>
+              )}
+              <div ref={messagesEndRef} />
             </div>
           )}
         </div>
-      ),
-    },
-  ]
 
-  return (
-    <section id="chat" className="py-16 px-4 sm:px-6 bg-white">
-      <div className="max-w-4xl mx-auto">
-        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-          {/* Header */}
-          <div className="bg-gradient-to-r from-medical-500 to-medical-600 text-white p-6">
-            <h2 className="text-2xl font-bold mb-2">Чат Доктор+</h2>
-            <p className="text-medical-100">Информационный помощник, не врач. Всегда консультируйтесь с врачом.</p>
-          </div>
-
-          {/* Messages */}
-          <div className="p-6 bg-gray-50 min-h-96 max-h-96 overflow-y-auto">
-            {messages.length === 0 ? (
-              <div className="text-center text-gray-500 py-12">
-                <p className="text-lg mb-2">👋</p>
-                <p>Здравствуйте! Как я могу вам помочь?</p>
-              </div>
-            ) : (
-              <>
-                {messages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className={`mb-4 flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
-                    <div
-                      className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                        msg.type === 'user'
-                          ? 'bg-medical-500 text-white rounded-br-none'
-                          : 'bg-gray-200 text-gray-900 rounded-bl-none'
-                      }`}
-                    >
-                      {msg.type === 'assistant' ? (
-                        <ReactMarkdown className="prose prose-sm max-w-none">
-                          {msg.content}
-                        </ReactMarkdown>
-                      ) : (
-                        <p>{msg.content}</p>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                <div ref={messagesEndRef} />
-              </>
-            )}
-          </div>
-
-          {/* Mode Tabs and Form */}
-          <div className="p-6 border-t border-gray-200">
-            {error && (
-              <Alert variant="error" className="mb-4">
-                {error}
-              </Alert>
-            )}
-
-            {limitReached && (
-              <Alert variant="warning" className="mb-4">
-                Лимит бесплатных запросов исчерпан. Попробуйте позже.
-              </Alert>
-            )}
-
-            {requestsToday > 0 && (
-              <p className="text-sm text-gray-600 mb-4">
-                Запросов сегодня: {requestsToday}/{LIMITS.maxRequestsPerDay}
-              </p>
-            )}
-
-            <div className="mb-6">
-              <div className="flex gap-2 border-b border-gray-200 mb-4">
-                <button
-                  onClick={() => setMode('symptoms')}
-                  className={`
-                    px-4 py-2.5 font-medium text-sm border-b-2 transition-colors
-                    ${
-                      mode === 'symptoms'
-                        ? 'border-medical-500 text-medical-600'
-                        : 'border-transparent text-gray-600 hover:text-gray-900'
-                    }
-                  `}
-                >
-                  Симптомы
-                </button>
-                <button
-                  onClick={() => setMode('analyses')}
-                  className={`
-                    px-4 py-2.5 font-medium text-sm border-b-2 transition-colors
-                    ${
-                      mode === 'analyses'
-                        ? 'border-medical-500 text-medical-600'
-                        : 'border-transparent text-gray-600 hover:text-gray-900'
-                    }
-                  `}
-                >
-                  Анализы
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {mode === 'symptoms'
-                ? tabs[0].content
-                : tabs[1].content}
-
-              <div className="flex gap-2">
-                <Button
-                  variant="primary"
-                  fullWidth
-                  onClick={() => sendMessage()}
-                  disabled={isPending || limitReached || !text.trim()}
-                  loading={isPending}
-                >
-                  {isPending ? 'Доктор+ думает...' : 'Спросить Доктор+'}
-                </Button>
-                {messages.length > 0 && (
-                  <Button
-                    variant="secondary"
-                    onClick={handleClearChat}
-                    disabled={isPending}
-                  >
-                    Новый диалог
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+        <ChatInputBar
+          value={input}
+          onChange={setInput}
+          onSend={handleSend}
+          isLoading={isLoading}
+        />
       </div>
-    </section>
+    </div>
   )
 }

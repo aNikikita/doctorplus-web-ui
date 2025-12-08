@@ -1,5 +1,6 @@
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
-export const API_ENDPOINT = `${API_BASE_URL}/api/doctorplus`
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api'
+// API_BASE_URL already includes /api, so we only append /doctorplus
+export const API_ENDPOINT = `${API_BASE_URL}/doctorplus`
 
 export const SITE_CONFIG = {
   name: 'Доктор+',

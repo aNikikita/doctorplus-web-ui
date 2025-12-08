@@ -18,13 +18,13 @@ export function Button({
   className = '',
   ...props
 }: ButtonProps) {
-  const baseClasses = 'font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2'
+  const baseClasses = 'font-medium rounded-lg transition-all shadow-soft hover:shadow-soft-md focus:outline-none focus:ring-2 focus:ring-offset-2'
   
   const variantClasses = {
-    primary: 'bg-medical-500 text-white hover:bg-medical-600 focus:ring-medical-500 disabled:bg-gray-400',
-    secondary: 'bg-gray-200 text-gray-900 hover:bg-gray-300 focus:ring-gray-400 disabled:bg-gray-300',
-    ghost: 'bg-transparent text-medical-600 hover:bg-medical-50 border border-medical-200 focus:ring-medical-400',
-    danger: 'bg-error-500 text-white hover:bg-error-600 focus:ring-error-500 disabled:bg-gray-400',
+    primary: 'bg-primary text-white hover:bg-brand-primary-dark focus:ring-primary disabled:bg-textMuted',
+    secondary: 'bg-secondary text-textPrimary hover:bg-brand-secondary-dark focus:ring-secondary disabled:bg-textMuted/30',
+    ghost: 'bg-transparent text-primary hover:bg-secondary border border-secondary focus:ring-primary',
+    danger: 'bg-error text-white hover:bg-error/80 focus:ring-error disabled:bg-textMuted',
   }
 
   const sizeClasses = {

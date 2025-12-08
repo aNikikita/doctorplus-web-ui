@@ -34,13 +34,22 @@ export async function askDoctorPlus(
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
       
+      // Log full error for debugging
+      console.error('Doctor+ API Error:', {
+        status: response.status,
+        statusText: response.statusText,
+        detail: errorData.detail,
+        errorData,
+      })
+      
       if (response.status === 429) {
         throw new RateLimitError('Лимит запросов исчерпан. Попробуйте позже.')
       }
       
       if (response.status === 400) {
+        const detail = errorData.detail || 'Некорректные данные. Проверьте ввод.'
         throw new ValidationError(
-          errorData.detail || 'Некорректные данные. Проверьте ввод.'
+          typeof detail === 'string' ? detail : JSON.stringify(detail)
         )
       }
       
