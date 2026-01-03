@@ -43,11 +43,6 @@ npm install
 # 2. Set environment variables
 cp .env.example .env.local
 # Edit .env.local and set NEXT_PUBLIC_API_BASE_URL
-
-# 3. Run development server
-npm run dev
-
-# Open http://localhost:3000
 ```
 
 ### Build
@@ -162,6 +157,12 @@ export async function askDoctorPlus(
   return response.json()
 }
 ```
+
+### Server-Side Proxy
+
+Frontend использует server-side proxy для взаимодействия с backend на Render. Все запросы к `/api/doctorplus` проксируются на backend `https://doctorplus-backend-ssz2.onrender.com/v1/doctorplus` с использованием API ключа, хранящегося в environment variables. Это предотвращает попадание API ключа в клиентский код.
+
+**Файл:** `src/app/api/doctorplus/route.ts`
 
 ---
 
