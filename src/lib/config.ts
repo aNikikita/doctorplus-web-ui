@@ -1,6 +1,7 @@
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000/api'
-// API_BASE_URL already includes /api, so we only append /doctorplus
-export const API_ENDPOINT = `${API_BASE_URL}/doctorplus`
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || ''
+// When deployed on Vercel, API routes are available at /api/ endpoints
+// So we use empty string to build /api/doctorplus directly
+export const API_ENDPOINT = `${API_BASE_URL ? API_BASE_URL + '/' : ''}api/doctorplus`
 
 export const SITE_CONFIG = {
   name: 'Доктор+',

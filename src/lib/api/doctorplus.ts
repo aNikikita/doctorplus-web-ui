@@ -20,6 +20,13 @@ export async function askDoctorPlus(
     client: 'web',
   }
 
+  // Log payload in development
+  console.log('Doctor+ API Request Payload:', {
+    mode: request.mode,
+    text: request.text,
+    image_b64: request.image_b64 ? '[BASE64_IMAGE_DATA]' : null
+  })
+
   try {
     const response = await fetch(API_ENDPOINT, {
       method: 'POST',
@@ -31,40 +38,27 @@ export async function askDoctorPlus(
       body: JSON.stringify(request),
     })
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}))
-      
-      // Log full error for debugging
-      console.error('Doctor+ API Error:', {
-        status: response.status,
-        statusText: response.statusText,
-        detail: errorData.detail,
-        errorData,
-      })
-      
-      if (response.status === 429) {
-        throw new RateLimitError('Лимит запросов исчерпан. Попробуйте позже.')
-      }
-      
-      if (response.status === 400) {
-        const detail = errorData.detail || 'Некорректные данные. Проверьте ввод.'
-        throw new ValidationError(
-          typeof detail === 'string' ? detail : JSON.stringify(detail)
-        )
-      }
-      
-      if (response.status >= 500) {
-        throw new ServerError('Сервис временно недоступен. Попробуйте позже.')
-      }
-
-      throw new ApiError(
-        errorData.detail || `HTTP ${response.status}`,
-        response.status
-      )
+    let data: any = null
+    const ct = response.headers.get("content-type") || ""
+    if (ct.includes("application/json")) {
+      data = await response.json()
+    } else {
+      const t = await response.text()
+      throw new ApiError(`Non-JSON response (${response.status}): ${t.slice(0, 300)}`)
     }
 
-    const data: DoctorPlusResponse = await response.json()
-    return data
+    if (!response.ok) {
+      const msg = data?.error?.message || data?.detail || "API error"
+      throw new ApiError(`API ${response.status}: ${msg}`)
+    }
+
+    const answer = data?.answer_md ?? data?.answer ?? data?.message ?? ""
+    if (!answer) {
+      console.warn("Empty answer, full response:", data)
+      throw new ApiError("Пустой ответ от сервера (answer_md отсутствует)")
+    }
+
+    return { answer_md: answer, usage: data?.usage } as DoctorPlusResponse
   } catch (error) {
     if (error instanceof RateLimitError || error instanceof ValidationError || error instanceof ServerError) {
       throw error
